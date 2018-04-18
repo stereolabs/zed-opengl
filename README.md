@@ -1,6 +1,6 @@
-# Stereolabs ZED - CUDA-OpenGL interoperability
+# Stereolabs ZED - OpenGL
 
-This sample allows you to display a GPU sl::Mat directly with OpenGL, by using the CUDA - OpenGL interoperability. 
+This sample demonstrates how to capture video and depth image with the ZED SDK in GPU memory and display them directly with OpenGL using CUDA - OpenGL interoperability.
 
 ## Getting started
 
