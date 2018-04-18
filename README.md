@@ -5,7 +5,7 @@ This sample allows you to display a GPU sl::Mat directly with OpenGL, by using t
 ## Getting started
 
 - First, download the latest version of the ZED SDK on [stereolabs.com](https://www.stereolabs.com).
-- For more information, read the ZED [API documentation](https://www.stereolabs.com/developers/documentation/API/).
+- For more information, read the ZED [API documentation](https://www.stereolabs.com/developers/documentation/API/latest/).
 
 ### Prerequisites
 
@@ -38,4 +38,4 @@ Open a terminal in the sample directory and execute the following command:
 - Navigate to the build directory and launch the executable file
 - Or open a terminal in the build directory and run the sample :
 
-      ./ZED\ openGL\ gpu\ interop(.exe)
+      ./ZED\ openGL(.exe)
