@@ -43,55 +43,53 @@
 using namespace sl;
 using namespace std;
 
-//Uncomment the following line to activate frame dropped counter
-//#define DROPPED_FRAME_COUNT 
 
-// Resource declarations (GL texture ID, GL shader ID...)
+// Resource declarations (texture, GLSL fragment shader, GLSL program...)
 GLuint imageTex;
 GLuint depthTex;
 GLuint shaderF;
 GLuint program;
+// Cuda resources for CUDA-OpenGL interoperability
 cudaGraphicsResource* pcuImageRes;
 cudaGraphicsResource* pcuDepthRes;
 
+// ZED SDK objects
 Camera zed;
 Mat gpuLeftImage;
 Mat gpuDepthImage;
 
-bool quit;
+// flag that activates the exit process
+bool quit = false;
 
-#ifdef DROPPED_FRAME_COUNT
-int save_dropped_frame = 0;
-int grab_counter = 0;
-#endif
-
-// Simple fragment shader to flip Red and Blue
+// Simple fragment shader that switch red and blue channels (RGBA -->BGRA)
 string strFragmentShad = ("uniform sampler2D texImage;\n"
                           " void main() {\n"
                           " vec4 color = texture2D(texImage, gl_TexCoord[0].st);\n"
                           " gl_FragColor = vec4(color.b, color.g, color.r, color.a);\n}");
 
-// GLUT main loop: grab --> extract GPU Mat --> send to OpenGL and quad
+// Functions declaration
+void close();
+
+
+// Main loop for acquisition and rendering : 
+// * grab from the ZED SDK
+// * Map cuda and opengl resources and copy the GPU buffer into a CUDA array
+// * Use the OpenGL texture to render on the screen
 void draw() {
     // Used for jetson only, the calling thread will be executed on the 2nd core.
     Camera::sticktoCPUCore(2);
 
+	// Call grab from the ZED SDK to retrieve data
+	// If grab returns success, a new frame is available
     int res = zed.grab();
 
     if (res == 0) {
-        // Count dropped frames
-#ifdef DROPPED_FRAME_COUNT
-        grab_counter++;
-        if (zed.getFrameDroppedCount() > save_dropped_frame) {
-            save_dropped_frame = zed.getFrameDroppedCount();
-            cout << save_dropped_frame << " dropped frames detected (ratio = " << 100.f * save_dropped_frame / (float) (save_dropped_frame + grab_counter) << ")" << endl;
 
-        }
-#endif
-
-        // Map GPU Ressource for Image
-        // With Gl texture, we have to use the cudaGraphicsSubResourceGetMappedArray cuda functions. It will link the gl texture with a cuArray
-        // Then, we just have to copy our GPU Buffer to the CudaArray (D2D copy)
+        // Map GPU Resource for left image
+        // With OpenGL textures, we need to use the cudaGraphicsSubResourceGetMappedArray CUDA functions. It will link/sync the OpenGL texture with a CUDA cuArray
+        // Then, we just have to copy our GPU Buffer to the CudaArray (DeviceToDevice copy) and the texture will contain the GPU buffer content.
+		// That's the most efficient way since we don't have to go back on the CPU to render the texture. Make sure that retrieveXXX() functions of the ZED SDK
+		// are used with sl::MEM_GPU parameters.
         if (zed.retrieveImage(gpuLeftImage, VIEW_LEFT, MEM_GPU) == SUCCESS) {
             cudaArray_t ArrIm;
             cudaGraphicsMapResources(1, &pcuImageRes, 0);
@@ -100,7 +98,8 @@ void draw() {
             cudaGraphicsUnmapResources(1, &pcuImageRes, 0);
         }
 
-        // Map GPU Ressource for Depth. Depth image == 8U 4channels
+        // Map GPU Resource for depth image.
+		// Note that we use the depth image here in a 8UC4 (RGBA) format.
         if (zed.retrieveImage(gpuDepthImage, VIEW_DEPTH, MEM_GPU) == SUCCESS) {
             cudaArray_t ArrDe;
             cudaGraphicsMapResources(1, &pcuDepthRes, 0);
@@ -109,16 +108,19 @@ void draw() {
             cudaGraphicsUnmapResources(1, &pcuDepthRes, 0);
         }
 
-        // OpenGL
+        ////  OpenGL rendering part ////
         glDrawBuffer(GL_BACK); // Write to both BACK_LEFT & BACK_RIGHT
         glLoadIdentity();
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
         glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
-        // Draw image texture in left part of side by side
+
+		// Left Image on left side of the screen
         glBindTexture(GL_TEXTURE_2D, imageTex);
-        // Flip R and B with GLSL Shader
+        
+		// Use GLSL program to switch red and blue channels
         glUseProgram(program);
 
+		// Render the final texture
         glBegin(GL_QUADS);
         glTexCoord2f(0.0, 1.0);
         glVertex2f(-1.0, -1.0);
@@ -130,11 +132,11 @@ void draw() {
         glVertex2f(-1.0, 1.0);
         glEnd();
 
+		// Stop the program
         glUseProgram(0);
 
-        // Draw depth texture in right part of side by side
+        // Depth image on right side of the screen
         glBindTexture(GL_TEXTURE_2D, depthTex);
-
         glBegin(GL_QUADS);
         glTexCoord2f(0.0, 1.0);
         glVertex2f(0.0, -1.0);
@@ -146,23 +148,21 @@ void draw() {
         glVertex2f(0.0, 1.0);
         glEnd();
 
-        // Swap
+
+		// Swap the buffers
         glutSwapBuffers();
     }
 
     glutPostRedisplay();
 
+	// If exit flag is activated, destroy resources and objects
     if (quit) {
-        gpuLeftImage.free();
-        gpuDepthImage.free();
-        zed.close();
-        glDeleteShader(shaderF);
-        glDeleteProgram(program);
-        glBindTexture(GL_TEXTURE_2D, 0);
+		close();
         glutDestroyWindow(1);
     }
 }
 
+// Close function
 void close() {
     gpuLeftImage.free();
     gpuDepthImage.free();
@@ -178,7 +178,8 @@ int main(int argc, char **argv) {
         cout << "Only the path of a SVO can be passed in arg" << endl;
         return -1;
     }
-    // init glut
+
+    // GLUT initialization
     glutInit(&argc, argv);
     glutInitDisplayMode(GLUT_DOUBLE | GLUT_RGBA | GLUT_DEPTH);
 
@@ -212,15 +213,12 @@ int main(int argc, char **argv) {
         return -1;
     }
 
-    quit = false;
-
-    // Get Image Size
+    // Get image size
     int width = zed.getResolution().width;
     int height = zed.getResolution().height;
 
-    cudaError_t err1, err2;
-
-    // Create and Register OpenGL Texture for Image (RGBA -- 4channels)
+	
+    // Create an OpenGL texture and register the CUDA resource on this texture for left image (8UC4 -- RGBA)
     glEnable(GL_TEXTURE_2D);
     glGenTextures(1, &imageTex);
     glBindTexture(GL_TEXTURE_2D, imageTex);
@@ -228,9 +226,9 @@ int main(int argc, char **argv) {
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
     glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, width, height, 0, GL_BGRA_EXT, GL_UNSIGNED_BYTE, NULL);
     glBindTexture(GL_TEXTURE_2D, 0);
-    err1 = cudaGraphicsGLRegisterImage(&pcuImageRes, imageTex, GL_TEXTURE_2D, cudaGraphicsRegisterFlagsWriteDiscard);
+	cudaError_t err1 = cudaGraphicsGLRegisterImage(&pcuImageRes, imageTex, GL_TEXTURE_2D, cudaGraphicsRegisterFlagsWriteDiscard);
 
-    // Create and Register a OpenGL texture for Depth (RGBA- 4 Channels)
+	// Create an OpenGL texture and register the CUDA resource on this texture for depth image (8UC4 -- RGBA)
     glGenTextures(1, &depthTex);
     glGenTextures(1, &depthTex);
     glBindTexture(GL_TEXTURE_2D, depthTex);
@@ -238,11 +236,18 @@ int main(int argc, char **argv) {
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
     glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, width, height, 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
     glBindTexture(GL_TEXTURE_2D, 0);
-    err2 = cudaGraphicsGLRegisterImage(&pcuDepthRes, depthTex, GL_TEXTURE_2D, cudaGraphicsRegisterFlagsWriteDiscard);
+	cudaError_t err2 = cudaGraphicsGLRegisterImage(&pcuDepthRes, depthTex, GL_TEXTURE_2D, cudaGraphicsRegisterFlagsWriteDiscard);
 
+	// If any error are triggered, exit the program
     if (err1 != 0 || err2 != 0) return -1;
 
-    // Create GLSL fragment Shader for future processing (and here flip R/B)
+   
+	// Create the GLSL program that will run the fragment shader (defined at the top)
+	// * Create the fragment shader from the string source
+	// * Compile the shader and check for errors
+	// * Create the GLSL program and attach the shader to it
+	// * Link the program and check for errors
+	// * Specify the uniform variable of the shader
     GLuint shaderF = glCreateShader(GL_FRAGMENT_SHADER); //fragment shader
     const char* pszConstString = strFragmentShad.c_str();
     glShaderSource(shaderF, 1, (const char**) &pszConstString, NULL);
@@ -253,18 +258,20 @@ int main(int argc, char **argv) {
     glGetShaderiv(shaderF, GL_COMPILE_STATUS, &compile_status);
     if (compile_status != GL_TRUE) return -2;
 
-    // Create the progam for both V and F Shader
+    // Create the progam and attach fragment shader
     program = glCreateProgram();
     glAttachShader(program, shaderF);
 
+	// Link the program and check for errors
     glLinkProgram(program);
     GLint link_status = GL_FALSE;
     glGetProgramiv(program, GL_LINK_STATUS, &link_status);
     if (link_status != GL_TRUE) return -2;
 
+	// Set the uniform variable for texImage (sampler2D) to the texture unit (GL_TEXTURE0 by default --> id = 0)
     glUniform1i(glGetUniformLocation(program, "texImage"), 0);
 
-    // Set Draw Loop
+    // Start the draw loop and closing event function
     glutDisplayFunc(draw);
     glutCloseFunc(close);
     glutMainLoop();
