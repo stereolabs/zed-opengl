@@ -79,9 +79,9 @@ string strFragmentShad = ("uniform sampler2D texImage;\n"
 
 void draw() {
 
-    int res = (int) zed.grab();
+    auto res = zed.grab();
 
-    if (res == 0) {
+    if (res == sl::ERROR_CODE::SUCCESS) {
         // Count dropped frames
 #ifdef DROPPED_FRAME_COUNT
         grab_counter++;
@@ -158,6 +158,9 @@ void draw() {
         // Swap
         glutSwapBuffers();
     }
+    else {
+        sl::sleep_us(100);
+    }
 
     glutPostRedisplay();
 
@@ -208,11 +211,12 @@ int main(int argc, char **argv) {
     // Setup our ZED Camera (construct and Init)
     if (argc == 1) { // Use in Live Mode
         init_parameters.camera_resolution = RESOLUTION::HD720;
-        init_parameters.camera_fps = 30.f;
+        init_parameters.camera_fps = 60.f;
     } else // Use in SVO playback mode
         init_parameters.input.setFromSVOFile(String(argv[1]));
 
     init_parameters.depth_mode = DEPTH_MODE::PERFORMANCE;
+    init_parameters.sdk_verbose = true;
     ERROR_CODE err = zed.open(init_parameters);
 
     // ERRCODE display
