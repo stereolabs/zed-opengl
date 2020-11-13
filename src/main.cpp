@@ -43,9 +43,6 @@
 using namespace sl;
 using namespace std;
 
-//Uncomment the following line to activate frame dropped counter
-//#define DROPPED_FRAME_COUNT 
-
 // Resource declarations (texture, GLSL fragment shader, GLSL program...)
 GLuint imageTex;
 GLuint depthTex;
@@ -59,13 +56,6 @@ Camera zed;
 Mat gpuLeftImage;
 Mat gpuDepthImage;
 
-bool quit = false;
-
-#ifdef DROPPED_FRAME_COUNT
-int save_dropped_frame = 0;
-int grab_counter = 0;
-#endif
-
 // Simple fragment shader that switch red and blue channels (RGBA -->BGRA)
 string strFragmentShad = ("uniform sampler2D texImage;\n"
         " void main() {\n"
@@ -78,20 +68,7 @@ string strFragmentShad = ("uniform sampler2D texImage;\n"
 // * Use the OpenGL texture to render on the screen
 
 void draw() {
-
-    auto res = zed.grab();
-
-    if (res == sl::ERROR_CODE::SUCCESS) {
-        // Count dropped frames
-#ifdef DROPPED_FRAME_COUNT
-        grab_counter++;
-        if (zed.getFrameDroppedCount() > save_dropped_frame) {
-            save_dropped_frame = zed.getFrameDroppedCount();
-            cout << save_dropped_frame << " dropped frames detected (ratio = " << 100.f * save_dropped_frame / (float) (save_dropped_frame + grab_counter) << ")" << endl;
-
-        }
-#endif
-
+    if (zed.grab() == ERROR_CODE::SUCCESS) {
         // Map GPU Resource for left image
         // With OpenGL textures, we need to use the cudaGraphicsSubResourceGetMappedArray CUDA functions. It will link/sync the OpenGL texture with a CUDA cuArray
         // Then, we just have to copy our GPU Buffer to the CudaArray (DeviceToDevice copy) and the texture will contain the GPU buffer content.
@@ -158,22 +135,8 @@ void draw() {
         // Swap
         glutSwapBuffers();
     }
-    else {
-        sl::sleep_us(100);
-    }
 
     glutPostRedisplay();
-
-    // If exit flag is activated, destroy resources and objects
-    if (quit) {
-        gpuLeftImage.free();
-        gpuDepthImage.free();
-        zed.close();
-        glDeleteShader(shaderF);
-        glDeleteProgram(program);
-        glBindTexture(GL_TEXTURE_2D, 0);
-        glutDestroyWindow(1);
-    }
 }
 
 void close() {
@@ -185,22 +148,31 @@ void close() {
     glBindTexture(GL_TEXTURE_2D, 0);
 }
 
+void keyPressedCallback(unsigned char c, int x, int y) {
+    if ((c == 27) || (c == 'q'))
+        glutLeaveMainLoop();
+}
+
 int main(int argc, char **argv) {
 
     if (argc > 2) {
         cout << "Only the path of a SVO can be passed in arg" << endl;
-        return -1;
+        return EXIT_FAILURE;
     }
     // init glut
     glutInit(&argc, argv);
     glutInitDisplayMode(GLUT_DOUBLE | GLUT_RGBA | GLUT_DEPTH);
-
-    // Configure Window Postion
-    glutInitWindowPosition(50, 25);
-
+    
     // Configure Window Size
-    glutInitWindowSize(1280, 480);
+    // define display size
+    int wnd_w = 720, wnd_h = 404;
+    glutInitWindowSize(wnd_w *2, wnd_h);
 
+    // Configure Window Postion, centered on screen
+    int screen_w = glutGet(GLUT_SCREEN_WIDTH);
+    int screen_h = glutGet(GLUT_SCREEN_HEIGHT);
+    glutInitWindowPosition(screen_w /2 - wnd_w, screen_h /2 - wnd_h/2);
+    
     // Create Window
     glutCreateWindow("ZED OGL interop");
 
@@ -209,28 +181,21 @@ int main(int argc, char **argv) {
 
     InitParameters init_parameters;
     // Setup our ZED Camera (construct and Init)
-    if (argc == 1) { // Use in Live Mode
-        init_parameters.camera_resolution = RESOLUTION::HD720;
-        init_parameters.camera_fps = 60.f;
-    } else // Use in SVO playback mode
+    if (argc == 2) // Use in SVO playback mode
         init_parameters.input.setFromSVOFile(String(argv[1]));
 
     init_parameters.depth_mode = DEPTH_MODE::PERFORMANCE;
-    init_parameters.sdk_verbose = true;
     ERROR_CODE err = zed.open(init_parameters);
 
     // ERRCODE display
     if (err != ERROR_CODE::SUCCESS) {
         cout << "ZED Opening Error: " << err << endl;
         zed.close();
-        return -1;
+        return EXIT_FAILURE;
     }
-
-    quit = false;
-
+    
     // Get Image Size
-    int width = zed.getCameraInformation().camera_resolution.width;
-    int height = zed.getCameraInformation().camera_resolution.height;
+    auto res_ = zed.getCameraInformation().camera_configuration.resolution;
 
     cudaError_t err1, err2;
 
@@ -240,7 +205,7 @@ int main(int argc, char **argv) {
     glBindTexture(GL_TEXTURE_2D, imageTex);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, width, height, 0, GL_BGRA_EXT, GL_UNSIGNED_BYTE, NULL);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, res_.width, res_.height, 0, GL_BGRA_EXT, GL_UNSIGNED_BYTE, NULL);
     glBindTexture(GL_TEXTURE_2D, 0);
     err1 = cudaGraphicsGLRegisterImage(&pcuImageRes, imageTex, GL_TEXTURE_2D, cudaGraphicsRegisterFlagsWriteDiscard);
 
@@ -250,7 +215,7 @@ int main(int argc, char **argv) {
     glBindTexture(GL_TEXTURE_2D, depthTex);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, width, height, 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, res_.width, res_.height, 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
     glBindTexture(GL_TEXTURE_2D, 0);
     err2 = cudaGraphicsGLRegisterImage(&pcuDepthRes, depthTex, GL_TEXTURE_2D, cudaGraphicsRegisterFlagsWriteDiscard);
 
@@ -289,7 +254,8 @@ int main(int argc, char **argv) {
     // Start the draw loop and closing event function
     glutDisplayFunc(draw);
     glutCloseFunc(close);
+    glutKeyboardFunc(keyPressedCallback);
     glutMainLoop();
 
-    return 0;
+    return EXIT_SUCCESS;
 }
